@@ -3,6 +3,14 @@
     Spark-TTS
     </h1>
     <p>
+ Super early prototype of audiobook generator using Spark-TTS. Designed to handle multiple voices in the same generation. Files need to be uploaded in Format below. Currently only supports three voices.
+
+ this is just a proof of concept and still real rough.<br>
+
+
+[voice1] text<br>
+[voice2] text<br>
+[voice3] text<br>
     Official PyTorch code for inference of <br>
     <b><em>Spark-TTS: An Efficient LLM-Based Text-to-Speech Model with Single-Stream Decoupled Speech Tokens</em></b>
     </p>
