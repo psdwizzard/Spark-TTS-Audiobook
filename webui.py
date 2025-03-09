@@ -80,6 +80,9 @@ def build_ui(model_dir, device=0):
     # Initialize model
     model = initialize_model(model_dir, device=device)
 
+    # Add global variable to store book text content
+    book_text_content = None
+    
     # Define callback function for voice cloning
     def voice_clone(text, prompt_text, prompt_wav_upload, prompt_wav_record):
         """
@@ -118,6 +121,179 @@ def build_ui(model_dir, device=0):
         )
         return audio_output_path
 
+    def test_character_voice(audio, transcript):
+        """Test a character's voice with a sample phrase"""
+        if audio is None:
+            return "Please upload or record a voice sample first."
+        
+        if not os.path.exists(audio):
+            return "Audio file not found. Please upload or record again."
+            
+        if not transcript or len(transcript.strip()) == 0:
+            return "Please enter the transcript of the voice sample."
+            
+        try:
+            test_text = "A quick brown fox jumps over the lazy dog."
+            return run_tts(
+                test_text,
+                model,
+                prompt_text=transcript.strip(),
+                prompt_speech=audio
+            )
+        except Exception as e:
+            logging.error(f"Error in test_character_voice: {str(e)}")
+            return f"Error testing voice: {str(e)}"
+
+    # Define callback function for processing audiobook text
+    def process_audiobook_characters(file_obj):
+        """
+        Process the uploaded text file to extract unique character names.
+        Expects format: "[character] text"
+        Returns a list of unique character names found in the text.
+        """
+        global audiobook_characters, book_text_content
+        audiobook_characters = []  # Reset the list
+        book_text_content = None  # Reset the content
+        
+        if file_obj is None:
+            return "Please upload a text file first."
+            
+        try:
+            text_content = file_obj.decode('utf-8')
+            book_text_content = text_content  # Store the content
+            # Find all matches of [character] pattern
+            import re
+            character_matches = re.findall(r'\[(.*?)\]', text_content)
+            # Get unique character names and sort them
+            unique_characters = sorted(set(character_matches))
+            
+            if not unique_characters:
+                return "No characters found. Make sure your text file has [character] format."
+                
+            # Format the output
+            result = "Found the following characters:\n\n"
+            for char in unique_characters:
+                result += f"• {char}\n"
+            
+            # Store characters in global variable for later use
+            audiobook_characters = unique_characters
+            
+            return result
+            
+        except Exception as e:
+            return f"Error processing file: {str(e)}"
+
+    def generate_complete_audiobook(char1_audio, char1_text, char2_audio, char2_text, char3_audio, char3_text, silence_duration):
+        """Generate the complete audiobook using configured character voices"""
+        global book_text_content, audiobook_characters
+        
+        if not book_text_content:
+            return "Please upload and process a text file first."
+            
+        if not audiobook_characters:
+            return "No characters found. Please process the text file first."
+            
+        # Create a dictionary of character voices with validation
+        character_voices = {}
+        if len(audiobook_characters) > 0:
+            if char1_audio and os.path.exists(char1_audio) and char1_text and len(char1_text.strip()) > 0:
+                character_voices[audiobook_characters[0]] = (char1_audio, char1_text.strip())
+            else:
+                return f"Please configure voice for {audiobook_characters[0]} (Character 1) with both audio and transcript."
+                
+        if len(audiobook_characters) > 1:
+            if char2_audio and os.path.exists(char2_audio) and char2_text and len(char2_text.strip()) > 0:
+                character_voices[audiobook_characters[1]] = (char2_audio, char2_text.strip())
+            else:
+                return f"Please configure voice for {audiobook_characters[1]} (Character 2) with both audio and transcript."
+                
+        if len(audiobook_characters) > 2:
+            if char3_audio and os.path.exists(char3_audio) and char3_text and len(char3_text.strip()) > 0:
+                character_voices[audiobook_characters[2]] = (char3_audio, char3_text.strip())
+            else:
+                return f"Please configure voice for {audiobook_characters[2]} (Character 3) with both audio and transcript."
+            
+        if not character_voices:
+            return "Please configure at least one character voice with both audio and transcript."
+            
+        try:
+            # Create output directory for the audiobook
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            book_dir = os.path.join("example/results", f"audiobook_{timestamp}")
+            os.makedirs(book_dir, exist_ok=True)
+            
+            # Process the text line by line
+            lines = book_text_content.split('\n')
+            all_audio_files = []
+            
+            for line in lines:
+                if not line.strip():
+                    continue
+                    
+                # Find character and dialogue
+                import re
+                match = re.match(r'\[(.*?)\](.*)', line)
+                if match:
+                    character, dialogue = match.groups()
+                    dialogue = dialogue.strip()
+                    
+                    # Skip empty dialogue
+                    if not dialogue:
+                        continue
+                    
+                    # If we have a voice for this character
+                    if character in character_voices:
+                        try:
+                            voice_sample, transcript = character_voices[character]
+                            # Generate audio for this line
+                            audio_path = run_tts(
+                                dialogue,
+                                model,
+                                prompt_text=transcript,
+                                prompt_speech=voice_sample,
+                                save_dir=book_dir
+                            )
+                            if audio_path and os.path.exists(audio_path):
+                                all_audio_files.append(audio_path)
+                        except Exception as e:
+                            logging.error(f"Error processing line for {character}: {str(e)}")
+                            continue
+            
+            if not all_audio_files:
+                return "No audio was generated. Please check your input text and character configurations."
+            
+            # Combine all audio files
+            import numpy as np
+            combined_audio = []
+            sr = 16000  # Default sample rate
+            
+            for audio_file in all_audio_files:
+                try:
+                    audio, sr = sf.read(audio_file)
+                    # Add silence between lines using the slider value
+                    silence = np.zeros(int(sr * silence_duration))
+                    combined_audio.extend(audio)
+                    combined_audio.extend(silence)
+                except Exception as e:
+                    logging.error(f"Error processing audio file {audio_file}: {str(e)}")
+                    continue
+            
+            if not combined_audio:
+                return "Failed to combine audio files. Please try again."
+            
+            # Save final audiobook
+            final_path = os.path.join(book_dir, "complete_audiobook.wav")
+            sf.write(final_path, np.array(combined_audio), sr)
+            
+            return final_path
+            
+        except Exception as e:
+            logging.error(f"Error in generate_complete_audiobook: {str(e)}")
+            return f"Error generating audiobook: {str(e)}"
+
+    # Global variable to store characters
+    audiobook_characters = []
+    
     with gr.Blocks() as demo:
         # Use HTML for centered title
         gr.HTML('<h1 style="text-align: center;">Spark-TTS by SparkAudio</h1>')
@@ -200,6 +376,176 @@ def build_ui(model_dir, device=0):
                     voice_creation,
                     inputs=[text_input_creation, gender, pitch, speed],
                     outputs=[audio_output],
+                )
+
+            # Audiobook Creation Tab
+            with gr.TabItem("Audiobook Creation"):
+                gr.Markdown(
+                    "### Create audiobooks with customized voices"
+                )
+                
+                # Step 1: Upload and find characters
+                with gr.Row():
+                    with gr.Column():
+                        # File upload for the book text
+                        book_file = gr.File(
+                            label="Upload Book Text File",
+                            file_types=[".txt"],
+                            file_count="single",
+                            type="binary"
+                        )
+                        process_chars_button = gr.Button("Find Characters")
+                    
+                    with gr.Column():
+                        # Display area for found characters
+                        characters_output = gr.Textbox(
+                            label="Found Characters",
+                            placeholder="Character names will appear here...",
+                            lines=10,
+                            max_lines=20,
+                            interactive=False
+                        )
+                
+                # Step 2: Character voice configuration instructions
+                gr.Markdown("## Character Voice Configuration")
+                gr.Markdown("After finding characters above, configure voices for each character below:")
+                
+                # Character configuration display
+                character_display = gr.Markdown("*Upload a file and click 'Find Characters' first*")
+                
+                # Character configuration sections
+                char1_name = gr.Markdown("Character 1")
+                with gr.Row():
+                    with gr.Column():
+                        char1_audio = gr.Audio(
+                            sources=["upload", "microphone"],
+                            type="filepath",
+                            label="Voice Sample"
+                        )
+                    with gr.Column():
+                        char1_text = gr.Textbox(
+                            label="Transcript",
+                            placeholder="Enter the text spoken in the sample...",
+                            lines=3
+                        )
+                char1_test = gr.Button("Test Voice")
+                
+                char2_name = gr.Markdown("Character 2")
+                with gr.Row():
+                    with gr.Column():
+                        char2_audio = gr.Audio(
+                            sources=["upload", "microphone"],
+                            type="filepath",
+                            label="Voice Sample"
+                        )
+                    with gr.Column():
+                        char2_text = gr.Textbox(
+                            label="Transcript",
+                            placeholder="Enter the text spoken in the sample...",
+                            lines=3
+                        )
+                char2_test = gr.Button("Test Voice")
+                
+                char3_name = gr.Markdown("Character 3")
+                with gr.Row():
+                    with gr.Column():
+                        char3_audio = gr.Audio(
+                            sources=["upload", "microphone"],
+                            type="filepath",
+                            label="Voice Sample"
+                        )
+                    with gr.Column():
+                        char3_text = gr.Textbox(
+                            label="Transcript",
+                            placeholder="Enter the text spoken in the sample...",
+                            lines=3
+                        )
+                char3_test = gr.Button("Test Voice")
+                
+                # Create a shared audio output for all test voices
+                audiobook_output = gr.Audio(
+                    label="Generated Audio",
+                    autoplay=True,
+                    streaming=True
+                )
+
+                # Function to update character display
+                def update_character_display():
+                    global audiobook_characters
+                    if not audiobook_characters:
+                        return ("*No characters found. Please upload text and click find characters.*", 
+                                "Character 1 *(not assigned)*", 
+                                "Character 2 *(not assigned)*", 
+                                "Character 3 *(not assigned)*")
+                    
+                    display = "### Characters Found:\n\n"
+                    
+                    for i, char in enumerate(audiobook_characters):
+                        display += f"**{i+1}. {char}**\n"
+                    
+                    display += "\nConfigure each character's voice below."
+                    
+                    # Create headers for each character 
+                    char1 = f"### Character 1: {audiobook_characters[0]}" if len(audiobook_characters) > 0 else "Character 1 *(not assigned)*"
+                    char2 = f"### Character 2: {audiobook_characters[1]}" if len(audiobook_characters) > 1 else "Character 2 *(not assigned)*"
+                    char3 = f"### Character 3: {audiobook_characters[2]}" if len(audiobook_characters) > 2 else "Character 3 *(not assigned)*"
+                    
+                    return display, char1, char2, char3
+                
+                # Connect find characters button
+                process_chars_button.click(
+                    fn=process_audiobook_characters,
+                    inputs=[book_file],
+                    outputs=[characters_output]
+                ).success(
+                    fn=update_character_display,
+                    inputs=[],
+                    outputs=[character_display, char1_name, char2_name, char3_name]
+                )
+
+                # Connect test voice buttons to the shared audio output
+                char1_test.click(
+                    fn=test_character_voice,
+                    inputs=[char1_audio, char1_text],
+                    outputs=[audiobook_output]
+                )
+
+                char2_test.click(
+                    fn=test_character_voice,
+                    inputs=[char2_audio, char2_text],
+                    outputs=[audiobook_output]
+                )
+
+                char3_test.click(
+                    fn=test_character_voice,
+                    inputs=[char3_audio, char3_text],
+                    outputs=[audiobook_output]
+                )
+
+                # Add silence duration slider
+                gr.Markdown("### Audiobook Generation Settings")
+                silence_slider = gr.Slider(
+                    minimum=0,
+                    maximum=1.0,
+                    step=0.01,
+                    value=0.5,
+                    label="Silence Duration Between Lines (seconds)"
+                )
+
+                # Generate Audiobook button
+                generate_button = gr.Button("Generate Complete Audiobook", variant="primary")
+                final_output = gr.Audio(label="Complete Audiobook", streaming=True)
+
+                # Connect generate button with the new silence_slider parameter
+                generate_button.click(
+                    fn=generate_complete_audiobook,
+                    inputs=[
+                        char1_audio, char1_text,
+                        char2_audio, char2_text,
+                        char3_audio, char3_text,
+                        silence_slider
+                    ],
+                    outputs=[final_output]
                 )
 
     return demo
